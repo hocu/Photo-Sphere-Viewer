@@ -8,6 +8,10 @@ function PSVHUD(psv) {
 
   this.$svg = null;
   this.markers = {};
+
+  this.prop = {
+    frustrumPoints: []
+  };
   this.currentMarker = null;
   this.hoveringMarker = null;
 
@@ -117,6 +121,8 @@ PSVHUD.prototype.addMarker = function(properties, render) {
   if (render !== false) {
     this.updatePositions();
   }
+
+  return marker;
 };
 
 /**
@@ -243,6 +249,24 @@ PSVHUD.prototype.toggleMarker = function(marker) {
 PSVHUD.prototype.updatePositions = function() {
   var rotation = !this.psv.isGyroscopeEnabled() ? 0 : this.psv.camera.rotation.z / Math.PI * 180;
 
+  this.prop.fovBounds = {
+    longitude1: PSVUtils.parseAngle(this.psv.prop.longitude - this.psv.prop.hFov * PSVUtils.Deg2Rad / 2),
+    longitude2: PSVUtils.parseAngle(this.psv.prop.longitude + this.psv.prop.hFov * PSVUtils.Deg2Rad / 2),
+    latitude1: this.psv.prop.latitude - this.psv.prop.vFov * PSVUtils.Deg2Rad / 2,
+    latitude2: this.psv.prop.latitude + this.psv.prop.vFov * PSVUtils.Deg2Rad / 2,
+    latitudeCrossOrigin: false
+  };
+
+  this.prop.fovBounds.latitudeCrossOrigin = this.prop.fovBounds.latitude1 > this.prop.fovBounds.latitude2;
+
+
+  this.prop.frustrumPoints = [
+    this.psv.sphericalCoordsToVector3(this.prop.fovBounds.longitude1, this.prop.fovBounds.latitude2),
+    this.psv.sphericalCoordsToVector3(this.prop.fovBounds.longitude2, this.prop.fovBounds.latitude2),
+    this.psv.sphericalCoordsToVector3(this.prop.fovBounds.longitude2, this.prop.fovBounds.latitude1),
+    this.psv.sphericalCoordsToVector3(this.prop.fovBounds.longitude1, this.prop.fovBounds.latitude1)
+  ];
+
   for (var id in this.markers) {
     var marker = this.markers[id];
 
@@ -314,6 +338,7 @@ PSVHUD.prototype._isMarkerVisible = function(marker, position) {
  * @private
  */
 PSVHUD.prototype._isPolygonVisible = function(marker, positions) {
+  return true;
   return marker.visible &&
     positions.some(function(pos, i) {
       return marker.positions3D[i].dot(this.psv.prop.direction) > 0 &&
@@ -356,9 +381,201 @@ PSVHUD.prototype._getMarkerPosition = function(marker) {
  * @private
  */
 PSVHUD.prototype._getPolygonPositions = function(marker) {
-  return marker.positions3D.map(function(pos) {
-    return this.psv.vector3ToViewerCoords(pos);
+  var nbVectors = marker.positions3D.length;
+
+  var positions = marker.polygon_rad.map(function(pos, i) {
+    var visible = pos[0] > this.prop.fovBounds.latitude1 && pos[0] < this.prop.fovBounds.latitude2;
+
+    if (visible) {
+      if (this.prop.fovBounds.longitude1 > this.prop.fovBounds.longitude2) { // rendered space crosses origin
+        visible &= pos[1] > this.prop.fovBounds.longitude1 || pos[1] < this.prop.fovBounds.longitude2;
+      }
+      else {
+        visible &= pos[1] > this.prop.fovBounds.longitude1 && pos[1] < this.prop.fovBounds.longitude2;
+      }
+    }
+
+    return {
+      spherical: pos,
+      vector: marker.positions3D[i],
+      visible: visible
+    };
   }, this);
+
+  var toBeComputed = positions.reduce(function(toBeComputed, pos, i) {
+    if (!pos.visible) {
+      var neighbours = [
+        i === 0 ? positions[nbVectors - 1] : positions[i - 1],
+        i === nbVectors - 1 ? positions[0] : positions[i + 1]
+      ];
+
+      var visibleNeighbour;
+      neighbours.some(function(neighbour) {
+        if (neighbour.visible) {
+          visibleNeighbour = neighbour;
+          return true;
+        }
+      });
+
+      if (visibleNeighbour) {
+        toBeComputed.push({
+          visible: visibleNeighbour,
+          invisible: pos
+        });
+      }
+    }
+
+    return toBeComputed;
+  }, []);
+
+  toBeComputed.forEach(function(pair) {
+    pair.invisible.vector = this._computeIntermediaryPoint(pair.visible.vector, pair.invisible.vector);
+    pair.invisible.visible = !!pair.invisible.vector;
+  }, this);
+
+  return positions
+    .filter(function(pos) {
+      return pos.visible;
+    })
+    .map(function(pos) {
+      return this.psv.vector3ToViewerCoords(pos.vector);
+    }, this);
+
+  /*
+   // compute if each vector is visible
+   var positions3D = marker.positions3D.map(function(vector) {
+   return {
+   vector: vector,
+   visible: vector.dot(this.psv.prop.direction) > 0
+   };
+   }, this);
+
+   // get pairs of visible/invisible vector for each invisible vector connected to a visible vector
+   var toBeComputed = positions3D.reduce(function(toBeComputed, pos, i) {
+   if (!pos.visible) {
+   var neighbours = [
+   i === 0 ? positions3D[nbVectors - 1] : positions3D[i - 1],
+   i === nbVectors - 1 ? positions3D[0] : positions3D[i + 1]
+   ];
+
+   var visibleNeighbour;
+   neighbours.some(function(neighbour) {
+   if (neighbour.visible) {
+   visibleNeighbour = neighbour;
+   return true;
+   }
+   });
+
+   if (visibleNeighbour) {
+   toBeComputed.push({
+   visible: visibleNeighbour,
+   invisible: pos
+   });
+   }
+   }
+
+   return toBeComputed;
+   }, []);
+
+   // compute intermediary vector for each pair
+   toBeComputed.forEach(function(pair) {
+   pair.invisible.vector = this._computeIntermediaryPoint(pair.visible.vector, pair.invisible.vector);
+   pair.invisible.visible = !!pair.invisible.vector;
+   }, this);
+
+   // translate vectors to screen pos
+   return positions3D
+   .filter(function(pos) {
+   return pos.visible;
+   })
+   .map(function(pos) {
+   return this.psv.vector3ToViewerCoords(pos.vector);
+   }, this)
+   .filter(function(pos) {
+   return Math.abs(pos.top) < 100000 && Math.abs(pos.left) < 100000;
+   });*/
+};
+
+PSVHUD.prototype._computeIntermediaryPoint = function(P1, P2) {
+  var sides = [
+    [this.prop.frustrumPoints[0], this.prop.frustrumPoints[1]],
+    [this.prop.frustrumPoints[1], this.prop.frustrumPoints[2]],
+    [this.prop.frustrumPoints[2], this.prop.frustrumPoints[3]],
+    [this.prop.frustrumPoints[3], this.prop.frustrumPoints[0]]
+  ];
+
+  var result;
+
+  sides.some(function(side) {
+    var temp = this._computeArcIntersection2(P1, P2, side[0], side[1]);
+
+    if (temp) {
+      result = temp;
+      return true;
+    }
+  }, this);
+
+  return result;
+};
+
+PSVHUD.prototype._computeArcIntersection1 = function(b, d) {
+  var n = new THREE.Vector3().crossVectors(b, d).normalize();
+  var v = new THREE.Vector3().crossVectors(n, b).normalize();
+
+  var N = this.psv.prop.direction.clone().normalize()
+
+  var H = new THREE.Vector3().addVectors(b.clone().multiplyScalar(-N.dot(v)), v.clone().multiplyScalar(N.dot(b))).normalize();
+
+  return H;
+};
+
+PSVHUD.prototype._computeArcIntersection2 = function(P1, P2, P3, P4) {
+  var U1 = new THREE.Vector3().crossVectors(P1, P2).normalize();
+  var U2 = new THREE.Vector3().crossVectors(P3, P4).normalize();
+
+  var S1 = new THREE.Vector3().crossVectors(U1, U2).normalize();
+  var S2 = S1.clone().multiplyScalar(-1);
+
+  var S1_ = this.psv.vector3ToSphericalCoords(S1);
+  var S2_ = this.psv.vector3ToSphericalCoords(S2);
+  var P1_ = this.psv.vector3ToSphericalCoords(P1);
+  var P2_ = this.psv.vector3ToSphericalCoords(P2);
+  var P3_ = this.psv.vector3ToSphericalCoords(P3);
+  var P4_ = this.psv.vector3ToSphericalCoords(P4);
+
+  var C, C_;
+
+  var P1_P2 = Math.acos(Math.sin(P1_.latitude) * Math.sin(P2_.latitude) + Math.cos(P1_.latitude) * Math.cos(P2_.latitude) * Math.cos(Math.abs(P1_.longitude - P2_.longitude)));
+
+  var S1_P1 = Math.acos(Math.sin(S1_.latitude) * Math.sin(P1_.latitude) + Math.cos(S1_.latitude) * Math.cos(P1_.latitude) * Math.cos(Math.abs(S1_.longitude - P1_.longitude)));
+  var S1_P2 = Math.acos(Math.sin(S1_.latitude) * Math.sin(P2_.latitude) + Math.cos(S1_.latitude) * Math.cos(P2_.latitude) * Math.cos(Math.abs(S1_.longitude - P2_.longitude)));
+
+  if (P1_P2 - S1_P1 - S1_P2 < 1e-15) {
+    C = S1;
+    C_ = S1_;
+  }
+  else {
+    var S2_P1 = Math.acos(Math.sin(S2_.latitude) * Math.sin(P1_.latitude) + Math.cos(S2_.latitude) * Math.cos(P1_.latitude) * Math.cos(Math.abs(S2_.longitude - P1_.longitude)));
+    var S2_P2 = Math.acos(Math.sin(S2_.latitude) * Math.sin(P2_.latitude) + Math.cos(S2_.latitude) * Math.cos(P2_.latitude) * Math.cos(Math.abs(S2_.longitude - P2_.longitude)));
+
+    if (P1_P2 - S2_P1 - S2_P2 < 1e-15) {
+      C = S2;
+      C_ = S2_;
+    }
+  }
+
+  if (C) {
+    var P3_P4 = Math.acos(Math.sin(P3_.latitude) * Math.sin(P4_.latitude) + Math.cos(P3_.latitude) * Math.cos(P4_.latitude) * Math.cos(Math.abs(P3_.longitude - P4_.longitude)));
+
+    var C_P3 = Math.acos(Math.sin(C_.latitude) * Math.sin(P3_.latitude) + Math.cos(C_.latitude) * Math.cos(P3_.latitude) * Math.cos(Math.abs(C_.longitude - P3_.longitude)));
+    var C_P4 = Math.acos(Math.sin(C_.latitude) * Math.sin(P4_.latitude) + Math.cos(C_.latitude) * Math.cos(P4_.latitude) * Math.cos(Math.abs(C_.longitude - P4_.longitude)));
+
+    if (P3_P4 - C_P3 - C_P4 < 1e-15) {
+      return C;
+    }
+  }
+
+  return null;
 };
 
 /**

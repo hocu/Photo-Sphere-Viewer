@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="../dist/photo-sphere-viewer.css">
+
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+    }
+
+    #photosphere {
+      width: calc(100% - 400px);
+      height: calc(100% - 200px);
+      margin: 100px 200px;
+    }
+
+    .psv-button.custom-button {
+      font-family: sans-serif;
+      font-weight: bold;
+      font-size: 14px;
+      flex-grow: 1;
+      line-height: 24px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="photosphere"></div>
+
+<script src="../bower_components/three.js/three.min.js"></script>
+<script src="../bower_components/D.js/lib/D.min.js"></script>
+<script src="../bower_components/uevent/uevent.min.js"></script>
+<script src="../bower_components/doT/doT.min.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/renderers/CanvasRenderer.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/renderers/Projector.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/postprocessing/RenderPass.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/postprocessing/MaskPass.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/shaders/CopyShader.js"></script>
+<script src="../bower_components/threejs-examples/examples/js/controls/DeviceOrientationControls.js"></script>
+<script src="../dist/photo-sphere-viewer.js"></script>
+
+<script>
+  var selectedObject;
+  var drawingObject;
+  var drawingHelper;
+
+  var PSV = new PhotoSphereViewer({
+    panorama: 'https://upload.wikimedia.org/wikipedia/commons/8/83/Equirectangular_projection_SW.jpg',
+    container: 'photosphere',
+    loading_img: 'photosphere-logo.gif',
+    navbar: [
+      'autorotate', 'zoom', 'download', 'markers',
+      'spacer-1',
+      {
+        id: 'add-polygon',
+        className: 'custom-button',
+        content: 'Add polygon',
+        onClick: function() {
+          if (drawingObject) {
+            stopDrawingPolygon();
+          }
+          else {
+            startDrawingPolygon();
+          }
+        }
+      },
+      {
+        id: 'delete-polygon',
+        className: 'custom-button',
+        content: 'Delete polygon',
+        onClick: function() {
+          deleteDelete();
+        }
+      },
+      'caption',
+      'gyroscope', 'fullscreen'
+    ],
+    caption: 'Bryce Canyon National Park <b>&copy; Mark Doliner</b>',
+    time_anim: false,
+    max_fov: 150,
+    default_fov: 100,
+    markers: [{
+      id: 'polygon-0',
+      polygon_rad: [
+        [5.11,0.72],
+        [1.09,0.54],
+        [1.3,0],
+        [0.93,-0.51],
+        [5.41,-0.23],
+        [5.5,0]
+      ]
+    }, {
+      id: 'point1',
+      circle: 5,
+      longitude: 5.11,
+      latitude: 0.72,
+      svgStyle: {
+        fill: 'red'
+      }
+    }, {
+      id: 'point2',
+      circle: 5,
+      longitude: 1.09,
+      latitude: 0.54,
+      svgStyle: {
+        fill: 'red'
+      }
+    }, {
+      id: 'point3',
+      circle: 5,
+      longitude: 1.3,
+      latitude: 0,
+      svgStyle: {
+        fill: 'red'
+      }
+    }, {
+      id: 'point4',
+      circle: 5,
+      longitude: 0.93,
+      latitude: -0.51,
+      svgStyle: {
+        fill: 'red'
+      }
+    }, {
+      id: 'point5',
+      circle: 5,
+      longitude: 5.41,
+      latitude: -0.23,
+      svgStyle: {
+        fill: 'red'
+      }
+    }, {
+      id: 'point6',
+      circle: 5,
+      longitude: 5.5,
+      latitude: 0,
+      svgStyle: {
+        fill: 'red'
+      }
+    }]
+  });
+
+  PSV.once('ready', function() {
+    this.container.addEventListener('mousemove', updatePolygonHelper);
+  });
+
+  PSV.on('select-marker', function(marker) {
+    if (drawingObject) {
+      return;
+    }
+
+    if (selectedObject) {
+      unselectObject();
+    }
+
+    selectObject(marker);
+  });
+
+  PSV.on('unselect-marker', function() {
+    if (drawingObject) {
+      return;
+    }
+
+    unselectObject();
+  });
+
+  function unselectObject() {
+    if (selectedObject) {
+      selectedObject.style.fill = 'rgba(250, 0, 0, 0.4)';
+      selectedObject.style.stroke = 'rgb(250, 0, 0)';
+      PSV.updateMarker(selectedObject);
+      selectedObject = undefined;
+    }
+  }
+
+  function selectObject(polygon) {
+    selectedObject = polygon;
+    selectedObject.style.fill = 'rgba(0, 180, 200, 0.4)';
+    selectedObject.style.stroke = 'rgb(0, 180, 200)';
+    PSV.updateMarker(selectedObject);
+  }
+
+  function deleteDelete() {
+    if (drawingObject) {
+      stopDrawingPolygon(true)
+    }
+
+    if (selectedObject) {
+      PSV.removeMarker(selectedObject);
+      selectedObject = undefined;
+    }
+  }
+
+  function startDrawingPolygon() {
+    PSV.hud.container.style.cursor = 'crosshair';
+    PSV.on('click', addPolygonEdge);
+  }
+
+  function stopDrawingPolygon(deleteObject) {
+    PSV.hud.container.style.cursor = 'pointer';
+    PSV.off('click', addPolygonEdge);
+
+    if (drawingObject) {
+      if (deleteObject || drawingObject.polygon_rad.length <= 2) {
+        PSV.removeMarker(drawingObject);
+      }
+      else {
+        drawingObject.style.fill = 'rgba(250, 0, 0, 0.4)';
+        drawingObject.style.stroke = 'rgb(250, 0, 0)';
+        drawingObject.$el.removeAttribute('stroke-dasharray');
+
+        PSV.updateMarker(drawingObject);
+      }
+
+      drawingObject = undefined;
+    }
+
+    if (drawingHelper) {
+      PSV.removeMarker(drawingHelper);
+      drawingHelper = undefined;
+    }
+  }
+
+  function addPolygonEdge(data) {
+    if (!drawingHelper) {
+      drawingHelper = PSV.addMarker({
+        id: 'polygon-helper',
+        polygon_rad: [data.longitude, data.latitude],
+        style: {
+          stroke: 'rgb(255, 180, 0)',
+          'stroke-width': '2px'
+        }
+      });
+    }
+    else {
+      drawingHelper.polygon_rad = [data.longitude, data.latitude];
+      PSV.updateMarker(drawingHelper);
+    }
+
+    if (!drawingObject) {
+      drawingObject = PSV.addMarker({
+        id: 'polygon-' + parseInt(Math.random() * 100000),
+        polygon_rad: [data.longitude, data.latitude],
+        style: {
+          fill: 'rgba(255, 255, 255, 0.4)',
+          stroke: 'rgb(255, 180, 0)',
+          'stroke-width': '2px'
+        }
+      });
+    }
+    else {
+      // detect du double click
+      var deltaX = Math.abs(drawingObject.polygon_rad[drawingObject.polygon_rad.length - 1][0] - data.longitude);
+      var deltaY = Math.abs(drawingObject.polygon_rad[drawingObject.polygon_rad.length - 1][1] - data.latitude);
+
+      if (deltaX < 1 / 100 && deltaY < 1 / 100) {
+        stopDrawingPolygon();
+      }
+      else {
+        drawingObject.polygon_rad.push([data.longitude, data.latitude]);
+        PSV.updateMarker(drawingObject);
+
+        // use a one dashed border in order to not draw the last segment
+        var length = 0;
+        var coords = drawingObject.$el.getAttribute('points').trim().split(' ').map(function(coord) {
+          return coord.split(',').map(parseFloat);
+        });
+        if (coords.length > 2) {
+          for (var i = 0, l = coords.length; i < l - 1; i++) {
+            length += Math.sqrt(Math.pow(coords[i][0] - coords[i + 1][0], 2) + Math.pow(coords[i][1] - coords[i + 1][1], 2));
+          }
+          drawingObject.$el.setAttribute('stroke-dasharray', length + ' ' + length);
+        }
+      }
+    }
+  }
+
+  function updatePolygonHelper(event) {
+    if (drawingHelper) {
+      var data = {
+        viewer_x: parseInt(event.clientX - PSV.prop.boundingRect.left),
+        viewer_y: parseInt(event.clientY - PSV.prop.boundingRect.top)
+      };
+
+      var intersect = PSV.viewerCoordsToVector3(data.viewer_x, data.viewer_y);
+
+      if (intersect) {
+        var sphericalCoords = PSV.vector3ToSphericalCoords(intersect);
+
+        drawingHelper.polygon_rad[1] = [sphericalCoords.longitude, sphericalCoords.latitude];
+        PSV.updateMarker(drawingHelper);
+      }
+    }
+  }
+</script>
+
+<script>
+  document.write('<script src="//' + location.host.split(':')[0] + ':35729/livereload.js" async defer><' + '/script>');
+</script>
+</body>
+</html>

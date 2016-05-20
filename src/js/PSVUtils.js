@@ -16,6 +16,10 @@ PSVUtils.TwoPI = Math.PI * 2.0;
  */
 PSVUtils.HalfPI = Math.PI / 2.0;
 
+PSVUtils.Rad2Deg = 180 / Math.PI;
+
+PSVUtils.Deg2Rad = Math.PI / 180;
+
 /**
  * Check if some Three.js components are loaded
  * @param {...string} components
